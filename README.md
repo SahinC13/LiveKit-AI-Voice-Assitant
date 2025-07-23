@@ -8,3 +8,4 @@ python main.py download-files
 python main.py dev
 
 Make sure to run all these on terminal in order to start.
+Note: Used VS Code.
