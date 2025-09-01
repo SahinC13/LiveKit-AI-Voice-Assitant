@@ -1,38 +1,67 @@
-import asyncio
-
 from dotenv import load_dotenv
-from livekit.agents import AutoSubscribe, JobContext, WorkerOptions, cli, llm
-from livekit.agents.voice_assistant import VoiceAssistant
-from livekit.plugins import openai, silero
-from api import AssistantFnc
+import os
+
+from livekit import agents
+from livekit.agents import AgentSession, Agent, RoomInputOptions, function_tool
+from livekit.plugins import (
+    openai,
+    cartesia,
+    deepgram,
+    noise_cancellation,
+    silero,
+)
+from livekit.plugins.turn_detector.multilingual import MultilingualModel
+
+from api import get_weather_city
 
 load_dotenv()
 
 
-async def entrypoint(ctx: JobContext):
-    initial_ctx = llm.ChatContext().append(
-        role="system",
-        text=(
-            "You are a voice assistant created by LiveKit. Your interface with users will be voice. "
-            "You should use short and concise responses, and avoiding usage of unpronouncable punctuation."
+class Assistant(Agent):
+    def __init__(self) -> None:
+        super().__init__(instructions=(
+            "You are a helpful and knowledgeable voice AI assistant specializing in providing current weather information. "
+            "You speak clearly and naturally. Ask for the location if the user hasn't mentioned it. "
+            "Use the weather tool to fetch real-time weather for any city. "
+            "When providing weather, be concise and directly answer the user's query."
+        ))
+
+    @function_tool()
+    async def get_current_weather(self, location: str) -> str:
+        """
+        Returns current weather for the given location, like 'New York' or 'Istanbul'.
+        This tool calls an external API to get real-time weather data.
+        """
+        return get_weather_city(location)
+
+
+async def entrypoint(ctx: agents.JobContext):
+    assistant = Assistant()
+
+    llm = openai.LLM(
+        model="gpt-4o-mini",
+    )
+
+    session = AgentSession(
+        stt=deepgram.STT(model="nova-3", language="multi"),
+        llm=llm,
+        tts=cartesia.TTS(model="sonic-2", voice="f786b574-daa5-4673-aa0c-cbe3e8534c02"),
+        vad=silero.VAD.load(),
+        turn_detection=MultilingualModel(),
+    )
+
+    await session.start(
+        room=ctx.room,
+        agent=assistant,
+        room_input_options=RoomInputOptions(
+            noise_cancellation=noise_cancellation.BVC()
         ),
     )
-    await ctx.connect(auto_subscribe=AutoSubscribe.AUDIO_ONLY)
-    fnc_ctx = AssistantFnc()
 
-    assitant = VoiceAssistant(
-        vad=silero.VAD.load(),
-        stt=openai.STT(),
-        llm=openai.LLM(),
-        tts=openai.TTS(),
-        chat_ctx=initial_ctx,
-        fnc_ctx=fnc_ctx,
-    )
-    assitant.start(ctx.room)
+    await ctx.connect()
 
-    await asyncio.sleep(1)
-    await assitant.say("Hey, how can I help you today!", allow_interruptions=True)
+    await session.generate_reply(instructions="Greet the user and offer weather assistance.")
 
 
 if __name__ == "__main__":
-    cli.run_app(WorkerOptions(entrypoint_fnc=entrypoint))
+    agents.cli.run_app(agents.WorkerOptions(entrypoint_fnc=entrypoint))
